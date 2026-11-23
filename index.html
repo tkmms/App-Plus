@@ -108,6 +108,8 @@ h1{font-size:21px;margin:0}h2{font-size:15px;margin:0}p,.hint{font-size:13px;lin
 #shade.show{display:block}
 #toast{position:absolute;z-index:60;bottom:calc(16px + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%);background:#e6ebf3;color:#10141a;padding:10px 15px;border-radius:30px;font-size:13px;opacity:0;pointer-events:none;transition:opacity .2s;max-width:90%;text-align:center}
 #toast.show{opacity:1}
+#clearMemo,#copyMemo{-webkit-touch-callout:none;touch-action:manipulation}
+button.pressing{background:#242c3a;transform:scale(.96)}
 [hidden]{display:none!important}</style></head><body class="booting">
 <div id="app">
 <div id="stage">
@@ -346,42 +348,60 @@ window.addEventListener('resize',function(){
 },{passive:true});
 window.addEventListener('pageshow',function(){setTimeout(function(){resetScrollPositions();syncSai()},0)});
 
-/* ===== キーボード表示時の入力欄可視化 ===== */
+/* ===== キーボード表示時の入力欄可視化 =====
+   ・キーボード表示中は管理画面(#drawer)だけをvisualViewportに固定し、
+     iOS側の勝手なスクロールと自前スクロールの喧嘩を防ぐ
+   ・入力/変換のたびのスクロールは rAF で1フレームに1回へまとめ、
+     「実際に隠れている時だけ」必要最小限動かす */
 function isKeyboardOpen(){
   const vv=window.visualViewport;
   if(!vv)return false;
   return (window.innerHeight-vv.height)>120;
 }
-function keepActiveVisible(){
-  const el=document.activeElement;
-  if(!el)return;
-  const tag=el.tagName;
-  if(tag!=='TEXTAREA'&&tag!=='INPUT')return;
-  if(!$('drawer').classList.contains('open'))return;
-  const vv=window.visualViewport;
-  if(!vv)return;
-  const m=16;
-  const top=vv.offsetTop+m;
-  const bottom=vv.offsetTop+vv.height-m;
-  const r=el.getBoundingClientRect();
-  const panels=$('panels');
-  if(r.bottom>bottom){
-    panels.scrollTop+=(r.bottom-bottom);
-  }else if(r.top<top){
-    panels.scrollTop-=(top-r.top);
+function applyDrawerViewport(){
+  const d=$('drawer'),vv=window.visualViewport;
+  if(vv&&d.classList.contains('open')&&isKeyboardOpen()){
+    const t=Math.round(vv.offsetTop)+'px',h=Math.round(vv.height)+'px';
+    if(d.style.top!==t)d.style.top=t;
+    if(d.style.height!==h)d.style.height=h;
+    d.style.bottom='auto';
+  }else if(d.style.height||d.style.top){
+    d.style.top='';d.style.bottom='';d.style.height='';
   }
+}
+let kbRaf=0;
+function keepActiveVisible(){
+  if(kbRaf)return;
+  kbRaf=requestAnimationFrame(function(){
+    kbRaf=0;
+    const el=document.activeElement;
+    if(!el)return;
+    const tag=el.tagName;
+    if(tag!=='TEXTAREA'&&tag!=='INPUT')return;
+    if(!$('drawer').classList.contains('open'))return;
+    const panels=$('panels');
+    const pr=panels.getBoundingClientRect();
+    const r=el.getBoundingClientRect();
+    const m=12,top=pr.top+m,bottom=pr.bottom-m;
+    if(r.bottom>bottom){
+      panels.scrollTop+=Math.ceil(r.bottom-bottom);
+    }else if(r.top<top&&r.height<=(bottom-top)){
+      panels.scrollTop-=Math.ceil(top-r.top);
+    }
+  });
 }
 
 if(window.visualViewport){
   window.visualViewport.addEventListener('resize',function(){
     const vv=window.visualViewport;
     if(vv&&Math.abs(vv.scale-1)>0.02)return;
+    applyDrawerViewport();
     if(isKeyboardOpen()){keepActiveVisible();return}
     resetScrollPositions();
     syncSai();
   },{passive:true});
   window.visualViewport.addEventListener('scroll',function(){
-    if(isKeyboardOpen())keepActiveVisible();
+    applyDrawerViewport();
   },{passive:true});
 }
 
@@ -393,6 +413,21 @@ if(window.ResizeObserver){
 }
 
 setTimeout(()=>document.body.classList.remove('booting'),1500);
+
+/* ===== オフライン対応（Service Worker） =====
+   sw.js をこのHTMLと同じフォルダに置いてください。
+   初回オンライン起動時にこのページ自身をキャッシュし、以後は圏外でも起動します。 */
+(function(){
+  try{
+    if(!('serviceWorker' in navigator))return;
+    if(!/^https?:$/.test(location.protocol))return;
+    const page=location.pathname+location.search;
+    window.addEventListener('load',function(){
+      navigator.serviceWorker.register('./sw.js?page='+encodeURIComponent(page),{scope:'./'}).catch(function(){});
+      try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(e){}
+    });
+  }catch(e){}
+})();
 
 function roundRectPath(ctx,x,y,w,h,r){
   ctx.beginPath();
@@ -569,8 +604,16 @@ function updateMemoCount(){
 }
 
 function resizeMemoText(el){
+  /* height:auto にすると一瞬コンテンツが縮み、親の scrollTop が勝手に
+     クランプされて画面が飛ぶため、前後で位置を保持して復元する */
+  const panels = $('panels');
+  const keep = panels ? panels.scrollTop : 0;
   el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight, 220) + 'px';
+  const sh = el.scrollHeight;
+  const h = Math.min(sh, 220);
+  el.style.height = h + 'px';
+  el.style.overflowY = sh > 220 ? 'auto' : 'hidden';
+  if (panels && panels.scrollTop !== keep) panels.scrollTop = keep;
 }
 
 function createMemoRow(item, idx){
@@ -692,7 +735,7 @@ function drawerOpen(){
   $('shade').classList.add('show');
   $('edge').style.display='none';
 }
-function drawerClose(){$('drawer').classList.remove('open');$('shade').classList.remove('show');$('edge').style.display=s.html?'block':'none';resetSplitMode()}
+function drawerClose(){$('drawer').classList.remove('open');applyDrawerViewport();$('shade').classList.remove('show');$('edge').style.display=s.html?'block':'none';resetSplitMode()}
 function tab(id){document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.panel===id));document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id===id));$('panels').scrollTop=0;if(id==='backupPanel'){storage();backupInfo()}}
 async function png(f){let b=await createImageBitmap(f),z=Math.min(b.width,b.height),c=document.createElement('canvas');c.width=c.height=512;c.getContext('2d').drawImage(b,(b.width-z)/2,(b.height-z)/2,z,z,0,0,512,512);return c.toDataURL('image/png')}
 async function chooseIcon(f){if(!f)return;try{s.icon=await png(f);$('iconPreview').src=s.icon;meta();toast('アイコンを登録しました')}catch{toast('画像を読み込めませんでした')}}
@@ -990,7 +1033,45 @@ $('addMemo').onclick=function(){
   saveMemoItemsSoon();
   renderMemoList(memoItems.length - 1);
 };
+/* ===== 長押し検出（クリア／コピー用） ===== */
+const LONGPRESS_MS=500;
+const COPY_PREFIX='次の修正を実施して全コードを提供してください。';
+function bindLongPress(btn,ms,onLong){
+  let timer=null,sx=0,sy=0,fired=false;
+  function cancel(){clearTimeout(timer);timer=null;btn.classList.remove('pressing')}
+  btn.addEventListener('pointerdown',function(e){
+    if(e.pointerType==='mouse'&&e.button!==0)return;
+    fired=false;sx=e.clientX;sy=e.clientY;
+    btn.classList.add('pressing');
+    clearTimeout(timer);
+    timer=setTimeout(function(){
+      timer=null;fired=true;
+      btn.classList.remove('pressing');
+      onLong();
+    },ms);
+  });
+  btn.addEventListener('pointermove',function(e){
+    if(timer&&(Math.abs(e.clientX-sx)>10||Math.abs(e.clientY-sy)>10))cancel();
+  });
+  ['pointerup','pointercancel','pointerleave'].forEach(function(t){btn.addEventListener(t,cancel)});
+  btn.addEventListener('contextmenu',function(e){e.preventDefault()});
+  /* 長押し発火後に続けて来る click を1回だけ無効化 */
+  return function consume(){const f=fired;fired=false;return f};
+}
+async function writeClip(text){
+  try{await navigator.clipboard.writeText(text);return true}catch(e){}
+  try{
+    const ta=document.createElement('textarea');
+    ta.value=text;ta.setAttribute('readonly','');
+    ta.style.cssText='position:fixed;left:-9999px;top:0;opacity:0';
+    document.body.appendChild(ta);ta.select();ta.setSelectionRange(0,text.length);
+    const ok=document.execCommand('copy');
+    ta.remove();return !!ok;
+  }catch(e){return false}
+}
+
 $('clearMemo').onclick=async function(){
+  if(consumeClear())return;
   if (!memoItems.some(function(it){ return it.checked; })) {
     toast('チェックされた項目がありません');
     return;
@@ -1001,19 +1082,37 @@ $('clearMemo').onclick=async function(){
   await saveMemoItemsNow();
   toast('チェックした項目を削除しました');
 };
+const consumeClear=bindLongPress($('clearMemo'),LONGPRESS_MS,async function(){
+  if(!memoItems.some(function(it){ return it.text.trim(); })){
+    toast('メモが空です');
+    return;
+  }
+  if(!confirm('メモを全部削除しますか？（元に戻せません）'))return;
+  clearTimeout(memoTimer);
+  memoItems=[];
+  renderMemoList();
+  try{await saveMemoItemsNow()}catch(e){}
+  toast('メモを全部削除しました');
+});
+
 $('copyMemo').onclick=async function(){
+  if(consumeCopy())return;
   const text = memoTextForAI();
   if (!text.replace(/・/g, '').trim()) {
     toast('メモが空です');
     return;
   }
-  try{
-    await navigator.clipboard.writeText(text);
-    toast('メモをコピーしました');
-  }catch{
-    toast('コピーできませんでした');
-  }
+  toast((await writeClip(text)) ? 'メモをコピーしました' : 'コピーできませんでした');
 };
+const consumeCopy=bindLongPress($('copyMemo'),LONGPRESS_MS,async function(){
+  const text = memoTextForAI();
+  if (!text.replace(/・/g, '').trim()) {
+    toast('メモが空です');
+    return;
+  }
+  const ok=await writeClip(COPY_PREFIX+'\n\n'+text);
+  toast(ok ? '依頼文付きでコピーしました' : 'コピーできませんでした');
+});
 
 /* AI依頼：分割モード中は分割共有、通常は全HTML共有 */
 $('improve').onclick=()=>{
