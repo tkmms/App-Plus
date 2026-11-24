@@ -660,11 +660,6 @@ function createMemoRow(item, idx){
       memoItems.splice(idx + 1, 0, { text: '', checked: false });
       saveMemoItemsSoon();
       renderMemoList(idx + 1);
-    } else if (e.key === 'Backspace' && ta.value === '') {
-      e.preventDefault();
-      memoItems.splice(idx, 1);
-      saveMemoItemsSoon();
-      renderMemoList(Math.max(0, idx - 1));
     }
   });
   ta.addEventListener('blur', function(){
@@ -738,7 +733,24 @@ function drawerOpen(){
 function drawerClose(){$('drawer').classList.remove('open');applyDrawerViewport();$('shade').classList.remove('show');$('edge').style.display=s.html?'block':'none';resetSplitMode()}
 function tab(id){document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.panel===id));document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id===id));$('panels').scrollTop=0;if(id==='backupPanel'){storage();backupInfo()}}
 async function png(f){let b=await createImageBitmap(f),z=Math.min(b.width,b.height),c=document.createElement('canvas');c.width=c.height=512;c.getContext('2d').drawImage(b,(b.width-z)/2,(b.height-z)/2,z,z,0,0,512,512);return c.toDataURL('image/png')}
-async function chooseIcon(f){if(!f)return;try{s.icon=await png(f);$('iconPreview').src=s.icon;meta();toast('アイコンを登録しました')}catch{toast('画像を読み込めませんでした')}}
+function nameFromFile(f){
+  const base=String(f&&f.name||'').replace(/\.[^./\\]+$/,'').trim();
+  return limitAppName(base);
+}
+async function chooseIcon(f){
+  if(!f)return;
+  if(f.type&&!/^image\//i.test(f.type)){toast('画像ファイルを選んでください');return}
+  try{
+    s.icon=await png(f);$('iconPreview').src=s.icon;
+    let named=false;
+    if(!String($('setupName').value||'').trim()){
+      const n=nameFromFile(f);
+      if(n){$('setupName').value=n;s.name=n;named=true}
+    }
+    meta();
+    toast(named?'アイコンを登録し、アプリ名を入力しました':'アイコンを登録しました');
+  }catch{toast('画像を読み込めませんでした')}
+}
 function bytes(n){let u=['B','KB','MB','GB'],i=0;while(n>=1024&&i<3){n/=1024;i++}return n.toFixed(i?1:0)+' '+u[i]}
 
 const STORAGE_CAP=1000*1024*1024;
@@ -997,7 +1009,26 @@ nameInput.addEventListener('input',syncName);
 nameInput.addEventListener('compositionend',syncName);
 nameInput.addEventListener('blur',syncName);
 
-$('iconFile').onchange=e=>chooseIcon(e.target.files?.[0]);
+$('iconFile').onchange=e=>{chooseIcon(e.target.files?.[0]);e.target.value=''};
+
+/* 画像のドラッグ&ドロップでアイコン登録 */
+(function(){
+  const icon=$('iconPreview');
+  const hasFiles=e=>e.dataTransfer&&Array.from(e.dataTransfer.types||[]).indexOf('Files')>=0;
+  let depth=0;
+  function on(){icon.style.borderColor='var(--accent)';icon.style.opacity='.8'}
+  function off(){depth=0;icon.style.borderColor='';icon.style.opacity=''}
+  document.addEventListener('dragenter',function(e){if(!hasFiles(e)||$('setup').hidden)return;depth++;on()});
+  document.addEventListener('dragleave',function(e){if(!hasFiles(e))return;depth=Math.max(0,depth-1);if(!depth)off()});
+  document.addEventListener('drop',function(e){
+    if(!hasFiles(e))return;
+    off();
+    if($('setup').hidden||$('stage').hidden)return;
+    const files=Array.from(e.dataTransfer.files||[]);
+    const img=files.find(f=>/^image\//i.test(f.type))||files.find(f=>/\.(png|jpe?g|gif|webp|heic|heif|bmp|svg)$/i.test(f.name));
+    if(img)chooseIcon(img);else if(files.length)toast('画像ファイルをドロップしてください');
+  });
+})();
 
 $('iconPreview').addEventListener('click',()=>$('iconFile').click());
 $('iconPreview').addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();$('iconFile').click()}});
